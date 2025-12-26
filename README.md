@@ -13,8 +13,8 @@ This goal of this project is to create and learn:
 
 ### Comparison-Based Sorts
 
-- [ ] Selection Sort (`selection.rs`)
-- [ ] Insertion Sort (`insertion.rs`)
+- [x] Selection Sort (`selection.rs`)
+- [x] Insertion Sort (`insertion.rs`)
 - [ ] Merge Sort (`merge.rs`)
 - [ ] Quick Sort (`quick.rs`)
 - [ ] Heap Sort (`heap.rs`)

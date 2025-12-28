@@ -1,9 +1,9 @@
 //! merge sort
 //!
-//! - In-place
-//! - O(n^2) comparisons (best: ~n, average: ~n^2/4, worst: ~n^2/2)
-//! - O(1) extra space
-//! - Stable
+//! - Not in-place
+//! - O(nlog(n)) comparisons
+//! - O(n) extra space
+//! - Unstable
 
 /// Sorts `data` in ascending order using merge sort
 pub fn merge_sort<T: Ord + Copy>(data: &mut [T]) {

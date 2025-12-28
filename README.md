@@ -15,8 +15,8 @@ This goal of this project is to create and learn:
 
 - [x] Selection Sort (`selection.rs`)
 - [x] Insertion Sort (`insertion.rs`)
-- [ ] Merge Sort (`merge.rs`)
-- [ ] Quick Sort (`quick.rs`)
+- [x] Merge Sort (`merge.rs`)
+- [x] Quick Sort (`quick.rs`)
 - [ ] Heap Sort (`heap.rs`)
 - [ ] Shell Sort
 - [ ] TimSort (`tim.rs`)

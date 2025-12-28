@@ -13,11 +13,6 @@ pub enum Partition {
     Dutch3Way,
 }
 
-struct ThreeWayBounds {
-    lt: usize,
-    gt: usize,
-}
-
 // ----- Public API -----
 pub fn quick_sort<T: Ord>(data: &mut [T]) {
     quick_sort_with(data, Partition::Hoare);
@@ -41,7 +36,7 @@ pub fn quick_sort_with<T: Ord>(data: &mut [T], scheme: Partition) {
             quick_sort_with(&mut data[p + 1..], Partition::Lomuto);
         }
         Partition::Dutch3Way => {
-            let ThreeWayBounds { lt, gt } = dutch_3_way(data, pivot);
+            let (lt, gt) = dutch_3_way(data, pivot);
             quick_sort_with(&mut data[..lt], Partition::Dutch3Way);
             quick_sort_with(&mut data[gt + 1..], Partition::Dutch3Way);
         }
@@ -100,16 +95,13 @@ fn hoare<T: Ord>(data: &mut [T], pivot: usize) -> usize {
 }
 
 /// 3-way quicksort. ..lt: Less than pivot, lt..gt+1: equal to pivot, gt+1..: larger than pivot
-fn dutch_3_way<T: Ord>(data: &mut [T], pivot: usize) -> ThreeWayBounds {
+fn dutch_3_way<T: Ord>(data: &mut [T], pivot: usize) -> (usize, usize) {
     // Guard for length <= 2
     if data.len() <= 2 {
         if data[0] > data[data.len() - 1] {
             data.swap(0, data.len() - 1);
         }
-        return ThreeWayBounds {
-            lt: 0,
-            gt: data.len() - 1,
-        };
+        return (0, data.len() - 1);
     }
 
     data.swap(pivot, data.len() - 1);
@@ -132,7 +124,7 @@ fn dutch_3_way<T: Ord>(data: &mut [T], pivot: usize) -> ThreeWayBounds {
         }
     }
     data.swap(gt, p);
-    return ThreeWayBounds { lt: lt, gt: gt };
+    return (lt, gt);
 }
 // ----- Helpers -----
 /// Picks the median of 3 elements (first, middle, last) to be the pivot.

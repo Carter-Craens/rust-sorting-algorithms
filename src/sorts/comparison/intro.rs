@@ -131,10 +131,34 @@ fn hoare<T: Ord>(data: &mut [T], pivot: usize) -> usize {
 // ----- Tests -----
 #[cfg(test)]
 mod tests {
-    use super::intro_sort;
+    use super::{INSERTION_THRESHOLD, intro_sort, intro_sort_impl};
+
+    // Helper function that checks for every pair next to another that left <= right side
+    fn is_sorted<T: Ord>(v: &[T]) -> bool {
+        v.windows(2).all(|w| w[0] <= w[1])
+    }
+
+    // Determinstic RNG so no rand crate needed
+    fn lcg_next(state: &mut u64) -> u64 {
+        // Constants from Numerical Recipes
+        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        *state
+    }
+
+    // Generates random i32 vectore depending on random seed
+    fn generate_vec_i32(len: usize, seed: u64) -> Vec<i32> {
+        let mut s = seed;
+        let mut out = Vec::with_capacity(len);
+        for _ in 0..len {
+            let x = lcg_next(&mut s);
+            // Since LCG returns a u64, fold it into i32 range and mix
+            out.push((x >> 33) as i32 ^ (x as i32));
+        }
+        out
+    }
 
     #[test]
-    fn sorts_integers() {
+    fn small_vec_integers_are_sorted() {
         let mut v = vec![3, 1, 2];
         intro_sort(&mut v);
         assert_eq!(v, vec![1, 2, 3]);
@@ -145,5 +169,29 @@ mod tests {
         let mut v: Vec<i32> = vec![];
         intro_sort(&mut v);
         assert_eq!(v, vec![]);
+    }
+
+    #[test]
+    fn depth_limit_zero_triggers_heap_sort() {
+        let n = INSERTION_THRESHOLD + 1;
+        // Reverse sorted vec i32
+        let mut v = (0..n as i32).rev().collect::<Vec<_>>();
+        assert!(!is_sorted(&v), "input should not be sorted");
+        assert!(v.len() > INSERTION_THRESHOLD);
+
+        // Call with depth_limit 0 to ensure heap branch is taken
+        intro_sort_impl(&mut v, 0);
+
+        assert!(is_sorted(&v));
+    }
+
+    #[test]
+    fn sorts_big_enough_input() {
+        let n = INSERTION_THRESHOLD * 4;
+        let mut v = (0..n as i32).rev().collect::<Vec<_>>();
+
+        intro_sort(&mut v);
+
+        assert!(is_sorted(&v));
     }
 }

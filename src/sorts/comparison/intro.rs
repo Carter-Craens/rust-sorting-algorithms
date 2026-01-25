@@ -1,9 +1,9 @@
 //! Intro sort
 //!
-//! - in-place
-//! - # comparisons
-//! - # extra space
-//! - (un)stable
+//! - In-place
+//! - O(nlogn) comparisons
+//! - O(logn) extra space
+//! - Unstable
 
 use crate::sorts::{heap_sort, insertion_sort};
 
@@ -136,25 +136,6 @@ mod tests {
     // Helper function that checks for every pair next to another that left <= right side
     fn is_sorted<T: Ord>(v: &[T]) -> bool {
         v.windows(2).all(|w| w[0] <= w[1])
-    }
-
-    // Determinstic RNG so no rand crate needed
-    fn lcg_next(state: &mut u64) -> u64 {
-        // Constants from Numerical Recipes
-        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        *state
-    }
-
-    // Generates random i32 vectore depending on random seed
-    fn generate_vec_i32(len: usize, seed: u64) -> Vec<i32> {
-        let mut s = seed;
-        let mut out = Vec::with_capacity(len);
-        for _ in 0..len {
-            let x = lcg_next(&mut s);
-            // Since LCG returns a u64, fold it into i32 range and mix
-            out.push((x >> 33) as i32 ^ (x as i32));
-        }
-        out
     }
 
     #[test]

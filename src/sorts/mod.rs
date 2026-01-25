@@ -18,6 +18,7 @@ pub use comparison::{
     merge::merge_sort,
     quick::{Partition, quick_sort, quick_sort_with},
     selection::selection_sort,
+    tim::tim_sort,
 };
 
 pub use non_comparison::counting::counting_sort;

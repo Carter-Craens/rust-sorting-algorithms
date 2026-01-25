@@ -17,10 +17,10 @@ This goal of this project is to create and learn:
 - [x] Insertion Sort (`insertion.rs`)
 - [x] Merge Sort (`merge.rs`)
 - [x] Quick Sort (`quick.rs`)
-- [ ] Heap Sort (`heap.rs`)
+- [x] Heap Sort (`heap.rs`)
 - [ ] Shell Sort
-- [ ] TimSort (`tim.rs`)
-- [ ] IntroSort (`intro.rs`)
+- [~] TimSort (`tim.rs`)
+- [x] IntroSort (`intro.rs`)
 - [ ] Smoothsort (`smooth.rs`)
 - [ ] Tree Sort (`tree.rs`)
 - [ ] Tournament Sort (`tournament.rs`)
@@ -73,7 +73,7 @@ Planned:
 - Support for numeric, string, and record sorting
 - Feature-gated benchmarking suite
 - Well-documented implementations
-- Educational clarity + real-world performance
+- Educational clarity + real-world performance tests
 
 ---
 

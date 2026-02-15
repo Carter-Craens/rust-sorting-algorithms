@@ -5,14 +5,12 @@
 //! - O(run_count()) -> O(n) extra space
 //! - Stable
 
-use std::cmp::Reverse;
-
+use std::cmp::{Reverse, min};
 // TODO:
-// Mergestuff (Mergestate?)
-// finish tim_sort logic
-// Reversing
-// Binary sort
+// Mergestuff
+// o Different merges
 // Galloping
+
 static MIN_GALLOP: usize = 7;
 static MAX_PENDING_SLICES: usize = 85;
 
@@ -28,70 +26,34 @@ pub fn tim_sort_by<T: Copy, F>(data: &mut [T], less: &mut F)
 where
     F: FnMut(&T, &T) -> bool,
 {
-    // merge_collapse
-    // merge_force_collapse
-    //
-    // reverse_sortslice?
-    //
-    // binarysort
-
-    let mut ms: MergeState<T>;
-    let nremaining: usize;
-    let minrun: usize;
-    let sortslice: &mut [T];
-    let reverse;
-    let i: usize;
-
-    // merge_init
-    ms.min_gallop = MIN_GALLOP;
-    ms.n = 0;
-
-    nremaining = data.len();
-    if nremaining < 2 {
-        return;
-    }
-
-    minrun = merge_compute_minrun(nremaining);
+    let mut ms = MergeState::<T>::new(data.len() / 2);
+    let minrun = merge_compute_minrun(data.len());
+    let n = data.len();
 
     let mut lo = 0;
-    let mut hi = data.len();
-
-    while nremaining > 0 {
-        let (mut run_len, descending) = count_run_by(&data[lo..lo + nremaining], less);
+    while lo < n {
+        let (mut run_len, descending) = count_run_by(&data[lo..], less);
 
         if descending {
-            &data[lo..lo + run_len].reverse(); // Unstable?
+            &data[lo..lo + run_len].reverse(); // Stable for equal items
         }
-        // If the run length is too short, extend it with binary sort
-        if run_len < minrun {
-            let force: usize;
-            if nremaining <= minrun {
-                force = nremaining;
-            } else {
-                force = minrun;
-            }
 
+        // If the run length is too short, extend it with binary sort
+        let force = min(minrun, n - lo);
+        if run_len < force {
             binarysort(&mut data[lo..lo + force], less, run_len);
             run_len = force;
         }
-        ms.pending[ms.n] = &mut data[lo..lo + run_len];
-        ms.n += 1;
-        merge_collapse(ms);
+        ms.push_run(lo, run_len);
+        merge_collapse(&mut ms, less);
+
         lo += run_len;
-        nremaining -= run_len;
     }
 
-    merge_force_collapse(ms);
+    merge_force_collapse(&mut ms, less);
 }
 
 // ----- helpers -----
-
-struct MergeState<'a, T> {
-    min_gallop: usize,
-    temparray: &'a [T],
-    n: usize,
-    pending: [&'a mut [T]; MAX_PENDING_SLICES],
-}
 
 /// Returns the tuple (run_len, descending) where run_len is the run starting at slice[0]
 /// slice.len() > 0 is required.
@@ -161,7 +123,7 @@ fn merge_compute_minrun(size: usize) -> usize {
     r + size
 }
 
-/// Binary sort implementation using 'less' ordering, know 0..cur_len is sorted.
+/// Binary sort implementation using 'less' ordering, knowing 0..cur_len is sorted.
 /// Must sort whole given slice, where slice will be of length nremaining or minrun.
 fn binarysort<T: Copy, F>(slice: &mut [T], less: &mut F, cur_len: usize)
 where
@@ -199,6 +161,107 @@ where
         }
         slice[l] = pivot;
     }
+}
+
+// ----- MergeSort section -----
+
+// Run and its functions
+#[derive(Clone, Copy, Debug, Default)]
+struct Run {
+    start: usize,
+    len: usize,
+}
+
+impl Run {
+    #[inline]
+    fn end(self) -> usize {
+        self.start + self.len
+    }
+}
+
+const EMPTY_RUN: Run = Run {start: 0, len: 0}
+
+
+
+// Mergestate and its functions
+struct MergeState<T>{
+    min_gallop: usize,
+    pending: [Run; MAX_PENDING_SLICES],
+    n: usize,
+    temparray: Vec<T>,
+}
+
+impl<T: Copy> MergeState<T> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            min_gallop: MIN_GALLOP,
+            pending: [EMPTY_RUN; MAX_PENDING_SLICES],
+            n: 0,
+            temparray: Vec::with_capacity(capacity)
+        }
+    }
+
+    #[inline]
+    fn push_run(&mut self, start: usize, len: usize) {
+        self.pending[self.n] = Run { start, len };
+        self.n += 1;
+    }
+
+    #[inline]
+    fn run(&self, i: usize) -> Run {
+        self.pending[i]
+    }
+}
+
+// Mergesort itself
+fn merge_force_collapse<T: Copy, F>(ms: &mut MergeState<T>, data: &mut [T], less: &mut F)
+where
+    F: FnMut(&T, &T) -> bool,
+{
+}
+
+fn merge_collapse<T: Copy, F>(ms: &mut MergeState<T>, data: &mut [T], less: &mut F)
+where
+    F: FnMut(&T, &T) -> bool,
+{
+    while ms.n > 1 {
+        let mut n = ms.n - 2;
+
+        if (n > 0 && ms.run(n-1).len <= ms.run(n).len + ms.run(n+1).len)
+            || (n > 1 && ms.run(n-2).len <= ms.run(n-1).len + ms.run(n).len)
+        {
+            if ms.run(n-1).len < ms.run(n+1).len {
+                n -= 1;
+            }
+            merge_at(ms, data, n, less);
+        } else if ms.run(n).len <= ms.run(n+1).len {
+            merge_at(ms, data, n, less);
+        } else {
+            break;
+        }
+    }
+}
+
+fn merge_at<T: Copy, F>(ms: &mut MergeState<T>, data: &mut [T], i: usize, less: &mut F)
+where
+    F: FnMut(&T, &T) -> bool,
+{
+    let (left, right) = data.split_at_mut(ms.run(i+1).start);
+
+    let mut ssa: &mut [T] = &mut left[ms.run(i).start.. ms.run(i).end()];
+    let mut ssb: &mut [T] = &mut right[.. ms.run(i+1).len];
+}
+
+fn merge_lo<T: Copy, F>(ms: MergeState<T>, ssa: &mut [T], ssb: &mut [T])
+where
+    F: FnMut(&T, &T) -> bool,
+{
+}
+
+fn merge_hi<T: Copy, F>(ms: MergeState<T>, ssa: &mut [T], ssb: &mut [T])
+where
+    F: FnMut(&T, &T) -> bool,
+{
 }
 
 #[cfg(test)]

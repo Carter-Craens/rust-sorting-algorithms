@@ -45,12 +45,12 @@ where
             run_len = force;
         }
         ms.push_run(lo, run_len);
-        merge_collapse(&mut ms, less);
+        merge_collapse(&mut ms, data, less);
 
         lo += run_len;
     }
 
-    merge_force_collapse(&mut ms, less);
+    merge_force_collapse(&mut ms, data, less);
 }
 
 // ----- helpers -----
@@ -179,12 +179,10 @@ impl Run {
     }
 }
 
-const EMPTY_RUN: Run = Run {start: 0, len: 0}
-
-
+const EMPTY_RUN: Run = Run { start: 0, len: 0 };
 
 // Mergestate and its functions
-struct MergeState<T>{
+struct MergeState<T> {
     min_gallop: usize,
     pending: [Run; MAX_PENDING_SLICES],
     n: usize,
@@ -197,7 +195,7 @@ impl<T: Copy> MergeState<T> {
             min_gallop: MIN_GALLOP,
             pending: [EMPTY_RUN; MAX_PENDING_SLICES],
             n: 0,
-            temparray: Vec::with_capacity(capacity)
+            temparray: Vec::with_capacity(capacity),
         }
     }
 
@@ -227,14 +225,14 @@ where
     while ms.n > 1 {
         let mut n = ms.n - 2;
 
-        if (n > 0 && ms.run(n-1).len <= ms.run(n).len + ms.run(n+1).len)
-            || (n > 1 && ms.run(n-2).len <= ms.run(n-1).len + ms.run(n).len)
+        if (n > 0 && ms.run(n - 1).len <= ms.run(n).len + ms.run(n + 1).len)
+            || (n > 1 && ms.run(n - 2).len <= ms.run(n - 1).len + ms.run(n).len)
         {
-            if ms.run(n-1).len < ms.run(n+1).len {
+            if ms.run(n - 1).len < ms.run(n + 1).len {
                 n -= 1;
             }
             merge_at(ms, data, n, less);
-        } else if ms.run(n).len <= ms.run(n+1).len {
+        } else if ms.run(n).len <= ms.run(n + 1).len {
             merge_at(ms, data, n, less);
         } else {
             break;
@@ -242,26 +240,230 @@ where
     }
 }
 
-fn merge_at<T: Copy, F>(ms: &mut MergeState<T>, data: &mut [T], i: usize, less: &mut F)
+fn merge_at<T: Copy, F>(
+    ms: &mut MergeState<T>,
+    data: &mut [T],
+    i: usize,
+    less: &mut F,
+) -> Result<(), &'static str>
 where
     F: FnMut(&T, &T) -> bool,
 {
-    let (left, right) = data.split_at_mut(ms.run(i+1).start);
+    let (left, right) = data.split_at_mut(ms.run(i + 1).start);
 
-    let mut ssa: &mut [T] = &mut left[ms.run(i).start.. ms.run(i).end()];
-    let mut ssb: &mut [T] = &mut right[.. ms.run(i+1).len];
+    let mut ssa: &mut [T] = &mut left[ms.run(i).start..ms.run(i).end()];
+    let mut ssb: &mut [T] = &mut right[..ms.run(i + 1).len];
+
+    ms.pending[i].len += ms.run(i + 1).len;
+    if i == ms.n - 3 {
+        ms.pending[i + 1] = ms.pending[i + 2];
+    }
+    ms.n -= 1;
+    let k = gallop_right(data, data[ms.run(i + 1).start], ms.run(i), 0, less);
+
+    assert!(k > 0);
+
+    ms.run(i).start += k;
+    ms.run(i).len -= k;
+    if ms.run(i).len == 0 {
+        return Ok(());
+    }
+
+    let l = gallop_left(
+        data,
+        data[ms.run(i).start],
+        ms.run(i + 1),
+        ms.run(i + 1).start - 1,
+        less,
+    );
+
+    ms.run(i + 1).len = l;
+    if l < 0 {
+        return Err("Woop");
+    } else if l == 0 {
+        return Ok(());
+    }
+
+    if ms.run(i).len <= ms.run(i + 1).len {
+        return merge_lo(data, ms, &mut ms.run(i), &mut ms.run(i + 1), less);
+    } else {
+        return merge_hi(data, ms, ms.run(i), ms.run(i + 1), less);
+    }
 }
 
-fn merge_lo<T: Copy, F>(ms: MergeState<T>, ssa: &mut [T], ssb: &mut [T])
+fn merge_lo<T: Copy, F>(
+    data: &mut [T],
+    ms: &mut MergeState<T>,
+    runa: &mut Run,
+    runb: &mut Run,
+    less: &mut F,
+) -> Result<(), &'static str>
 where
     F: FnMut(&T, &T) -> bool,
 {
+    assert!(runa.len > 0 && runb.len > 0);
+    ms.temparray.copy_from_slice(&data[runa.start..runa.end()]);
+
+    // Dest -> runa start.
+    let mut dest: Run = runa.clone();
+    runa.start = 0; // Now will be used to index temparray
+
+    data[dest.start] = data[runb.start];
+    dest.start += 1;
+    dest.len -= 1;
+    runb.start += 1;
+    runb.len -= 1;
+
+    if runb.len == 0 {
+        return Ok(());
+    }
+    if runa.len == 1 {
+        // CopyB
+        return Ok(());
+    }
+
+    loop {
+        let k: bool = less(&data[dest.start], &data[runb.start]);
+        if (k) {}
+    }
+    Ok(())
 }
 
-fn merge_hi<T: Copy, F>(ms: MergeState<T>, ssa: &mut [T], ssb: &mut [T])
+fn merge_hi<T: Copy, F>(
+    data: &mut [T],
+    ms: &mut MergeState<T>,
+    runa: Run,
+    runb: Run,
+    less: &mut F,
+) -> Result<(), &'static str>
 where
     F: FnMut(&T, &T) -> bool,
 {
+    assert!(runa.len > 0 && runb.len > 0);
+    Ok(())
+}
+
+fn gallop_right<T: Copy, F>(data: &mut [T], key: T, run: Run, hint: usize, less: &mut F) -> usize
+where
+    F: FnMut(&T, &T) -> bool,
+{
+    let mut lastofs: usize = 0;
+    let mut ofs: usize = 1;
+    let mut a: usize = run.start + hint;
+
+    if less(&key, &data[a]) {
+        let maxofs = hint + 1;
+        while ofs < maxofs {
+            if less(&key, &data[a - ofs]) {
+                lastofs = ofs;
+                ofs = (ofs << 1) + 1;
+                if ofs <= 0 {
+                    ofs = maxofs;
+                }
+            } else {
+                break;
+            }
+        }
+        if ofs > maxofs {
+            ofs = lastofs;
+        }
+        let k = lastofs;
+        lastofs = hint - ofs;
+        ofs = hint - k;
+    } else {
+        let maxofs = run.len - hint;
+        while ofs < maxofs {
+            if less(&key, &data[a + ofs]) {
+                break;
+            }
+            lastofs = ofs;
+            ofs = (ofs << 1) + 1;
+            if ofs <= 0 {
+                ofs = maxofs;
+            }
+        }
+        if ofs > maxofs {
+            ofs = maxofs;
+        }
+
+        lastofs += hint;
+        ofs += hint;
+    }
+    a -= hint;
+
+    lastofs += 1;
+    while lastofs < ofs {
+        let m = lastofs + ((ofs + lastofs) >> 1);
+
+        if less(&key, &data[a + m]) {
+            ofs = m;
+        } else {
+            lastofs = m + 1;
+        }
+    }
+
+    ofs
+}
+
+fn gallop_left<T: Copy, F>(data: &mut [T], key: T, run: Run, hint: usize, less: &mut F) -> usize
+where
+    F: FnMut(&T, &T) -> bool,
+{
+    let mut lastofs: usize = 0;
+    let mut ofs: usize = 1;
+    let mut a: usize = run.start + hint;
+
+    if less(&data[a], &key) {
+        let maxofs = run.len - hint;
+        while ofs < maxofs {
+            if less(&data[a + ofs], &key) {
+                lastofs = ofs;
+                ofs = (ofs << 1) + 1;
+                if ofs <= 0 {
+                    ofs = maxofs;
+                }
+            } else {
+                break;
+            }
+        }
+        if ofs > maxofs {
+            ofs = lastofs;
+        }
+        lastofs += hint;
+        ofs += hint;
+    } else {
+        let maxofs = hint + 1;
+        while ofs < maxofs {
+            if less(&data[a - ofs], &key) {
+                break;
+            }
+            lastofs = ofs;
+            ofs = (ofs << 1) + 1;
+            if ofs <= 0 {
+                ofs = maxofs;
+            }
+        }
+        if ofs > maxofs {
+            ofs = maxofs;
+        }
+        let k = lastofs;
+        lastofs += hint - ofs;
+        ofs += hint - k;
+    }
+    a -= hint;
+
+    lastofs += 1;
+    while lastofs < ofs {
+        let m = lastofs + ((ofs - lastofs) >> 1);
+
+        if less(&data[a + m], &key) {
+            lastofs = m + 1;
+        } else {
+            ofs = m;
+        }
+    }
+
+    ofs
 }
 
 #[cfg(test)]

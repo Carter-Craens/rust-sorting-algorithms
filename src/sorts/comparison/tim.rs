@@ -5,7 +5,10 @@
 //! - O(run_count()) -> O(n) extra space
 //! - Stable
 
-use std::cmp::{Reverse, min};
+use std::{
+    cmp::{Reverse, min},
+    i8::MIN,
+};
 // TODO:
 // Mergestuff
 // o Different merges
@@ -35,7 +38,7 @@ where
         let (mut run_len, descending) = count_run_by(&data[lo..], less);
 
         if descending {
-            &data[lo..lo + run_len].reverse(); // Stable for equal items
+            let _ = &data[lo..lo + run_len].reverse(); // Stable for equal items
         }
 
         // If the run length is too short, extend it with binary sort
@@ -231,9 +234,9 @@ where
             if ms.run(n - 1).len < ms.run(n + 1).len {
                 n -= 1;
             }
-            merge_at(ms, data, n, less);
+            let _ = merge_at(ms, data, n, less);
         } else if ms.run(n).len <= ms.run(n + 1).len {
-            merge_at(ms, data, n, less);
+            let _ = merge_at(ms, data, n, less);
         } else {
             break;
         }
@@ -259,7 +262,7 @@ where
         ms.pending[i + 1] = ms.pending[i + 2];
     }
     ms.n -= 1;
-    let k = gallop_right(data, data[ms.run(i + 1).start], ms.run(i), 0, less);
+    let k = gallop_right(data, data[ms.run(i + 1).start], &mut ms.run(i), 0, less);
 
     assert!(k > 0);
 
@@ -272,7 +275,7 @@ where
     let l = gallop_left(
         data,
         data[ms.run(i).start],
-        ms.run(i + 1),
+        &mut ms.run(i + 1),
         ms.run(i + 1).start - 1,
         less,
     );
@@ -303,16 +306,17 @@ where
 {
     assert!(runa.len > 0 && runb.len > 0);
     ms.temparray.copy_from_slice(&data[runa.start..runa.end()]);
-
+    let min_gallop_t = ms.min_gallop;
     // Dest -> runa start.
     let mut dest: Run = runa.clone();
     runa.start = 0; // Now will be used to index temparray
 
-    data[dest.start] = data[runb.start];
-    dest.start += 1;
-    dest.len -= 1;
-    runb.start += 1;
-    runb.len -= 1;
+    sortslice_copy_incr(&dest, &runb);
+    // data[dest.start] = data[runb.start];
+    // dest.start += 1;
+    // dest.len -= 1;
+    // runb.start += 1;
+    // runb.len -= 1;
 
     if runb.len == 0 {
         return Ok(());
@@ -323,10 +327,79 @@ where
     }
 
     loop {
-        let k: bool = less(&data[dest.start], &data[runb.start]);
-        if (k) {}
+        let acount = 0;
+        let bcount = 0;
+        loop {
+            let k: bool = less(&data[dest.start], &data[runb.start]);
+            if (k) {
+                sortslice_copy_incr(&data, &dest, &runb);
+                bcount += 1;
+                acount = 0;
+                if runb.len == 0 {
+                    return Ok(());
+                }
+                if bcount >= ms.min_gallop {
+                    break;
+                }
+            } else {
+                sortslice_copy_incr(&data, &dest, &runa);
+                acount += 1;
+                bcount = 0;
+                if runa.len == 1 {
+                    // goto copyB
+                }
+                if acount >= min_gallop_t {
+                    break;
+                }
+            }
+        }
+
+        // Galloping logic
+        min_gallop_t += 1;
+        while acount >= MIN_GALLOP || bcount >= MIN_GALLOP {
+            assert!(runa.len > 1 && runb.len > 0);
+            min_gallop_t -= if min_gallop_t > 1 { 1 } else { 0 };
+            ms.min_gallop = min_gallop_t;
+            let k = gallop_right(data, data[runb.start], runa, 0, less);
+            acount = k;
+            if k > 0 {
+                sortslice_memcpy(&data, &dest, 0, &runa, 0, k);
+                run_advance(&dest, k);
+                run_advance(&runa, k);
+                if runa.len == 1 {
+                    // goto copyB
+                }
+                if runa.len == 0 {
+                    return Ok(());
+                }
+            }
+            sortslice_copy_incr(&data, &dest, &runb);
+            if runb.len == 0 {
+                return Ok(());
+            }
+            let k = gallop_left(data, data[runa.start], runb, 0, less);
+            bcount = k;
+            if k > 0 {
+                sortslice_memmove(&data, &dest, 0, &runb, 0, k);
+                sortslice_advance(&data, &dest, k);
+                sortslice_advance(&data, &runb, k);
+                if runb.len == 0 {
+                    return Ok(());
+                }
+            }
+            sortslice_cop_incr(&data, &dest, &runa);
+            if runa.len == 0 {
+                // CopyB
+                assert!(runa.len == 1 && runb.len > 0);
+                sortslice_memmove(&data, &dest, 0, &runb, 0, k);
+                sortslice_copy(&data, &dest, runb.len, &runa, 0);
+                return Ok(());
+            }
+        }
+        min_gallop_t += 1;
+
+        ms.min_gallop = min_gallop_t;
     }
-    Ok(())
 }
 
 fn merge_hi<T: Copy, F>(
@@ -343,7 +416,13 @@ where
     Ok(())
 }
 
-fn gallop_right<T: Copy, F>(data: &mut [T], key: T, run: Run, hint: usize, less: &mut F) -> usize
+fn gallop_right<T: Copy, F>(
+    data: &mut [T],
+    key: T,
+    run: &mut Run,
+    hint: usize,
+    less: &mut F,
+) -> usize
 where
     F: FnMut(&T, &T) -> bool,
 {
@@ -405,7 +484,13 @@ where
     ofs
 }
 
-fn gallop_left<T: Copy, F>(data: &mut [T], key: T, run: Run, hint: usize, less: &mut F) -> usize
+fn gallop_left<T: Copy, F>(
+    data: &mut [T],
+    key: T,
+    run: &mut Run,
+    hint: usize,
+    less: &mut F,
+) -> usize
 where
     F: FnMut(&T, &T) -> bool,
 {

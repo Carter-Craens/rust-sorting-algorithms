@@ -11,8 +11,19 @@ use std::{
 };
 // TODO:
 // Mergestuff
-// o Different merges
-// Galloping
+// - All the memory functions (memcpy, memmove)
+//      - sortslice_memcpy/move
+// - All the run incr/decr helpers
+//      - sortslice_copy_incr/decr
+//      - sorctslice_advance
+// - Finalize merge_lo/hi once helper function worked out
+//      - Assure that the mergestate returns to original-ish
+// - Put effort into error handling once memory functions are in
+//      - Logic errors to debug_asserts, panic on memory errors
+// Tests:
+// - Normal array tests
+// - Unit tests for each function
+//
 
 static MIN_GALLOP: usize = 7;
 static MAX_PENDING_SLICES: usize = 85;
@@ -219,6 +230,13 @@ fn merge_force_collapse<T: Copy, F>(ms: &mut MergeState<T>, data: &mut [T], less
 where
     F: FnMut(&T, &T) -> bool,
 {
+    while ms.n > 1 {
+        let mut n = ms.n - 2;
+        if n > 0 && ms.run(n - 1).len < ms.run(n + 1).len {
+            n -= 1;
+        }
+        let _ = merge_at(ms, data, n, less);
+    }
 }
 
 fn merge_collapse<T: Copy, F>(ms: &mut MergeState<T>, data: &mut [T], less: &mut F)
@@ -234,29 +252,19 @@ where
             if ms.run(n - 1).len < ms.run(n + 1).len {
                 n -= 1;
             }
-            let _ = merge_at(ms, data, n, less);
+            merge_at(ms, data, n, less);
         } else if ms.run(n).len <= ms.run(n + 1).len {
-            let _ = merge_at(ms, data, n, less);
+            merge_at(ms, data, n, less);
         } else {
             break;
         }
     }
 }
 
-fn merge_at<T: Copy, F>(
-    ms: &mut MergeState<T>,
-    data: &mut [T],
-    i: usize,
-    less: &mut F,
-) -> Result<(), &'static str>
+fn merge_at<T: Copy, F>(ms: &mut MergeState<T>, data: &mut [T], i: usize, less: &mut F)
 where
     F: FnMut(&T, &T) -> bool,
 {
-    let (left, right) = data.split_at_mut(ms.run(i + 1).start);
-
-    let mut ssa: &mut [T] = &mut left[ms.run(i).start..ms.run(i).end()];
-    let mut ssb: &mut [T] = &mut right[..ms.run(i + 1).len];
-
     ms.pending[i].len += ms.run(i + 1).len;
     if i == ms.n - 3 {
         ms.pending[i + 1] = ms.pending[i + 2];
@@ -269,7 +277,7 @@ where
     ms.run(i).start += k;
     ms.run(i).len -= k;
     if ms.run(i).len == 0 {
-        return Ok(());
+        return;
     }
 
     let l = gallop_left(
@@ -281,16 +289,14 @@ where
     );
 
     ms.run(i + 1).len = l;
-    if l < 0 {
-        return Err("Woop");
-    } else if l == 0 {
-        return Ok(());
+    if l == 0 {
+        return;
     }
 
     if ms.run(i).len <= ms.run(i + 1).len {
-        return merge_lo(data, ms, &mut ms.run(i), &mut ms.run(i + 1), less);
+        merge_lo(data, ms, &mut ms.run(i), &mut ms.run(i + 1), less);
     } else {
-        return merge_hi(data, ms, ms.run(i), ms.run(i + 1), less);
+        merge_hi(data, ms, ms.run(i), ms.run(i + 1), less);
     }
 }
 
@@ -300,8 +306,7 @@ fn merge_lo<T: Copy, F>(
     runa: &mut Run,
     runb: &mut Run,
     less: &mut F,
-) -> Result<(), &'static str>
-where
+) where
     F: FnMut(&T, &T) -> bool,
 {
     assert!(runa.len > 0 && runb.len > 0);
@@ -312,31 +317,35 @@ where
     runa.start = 0; // Now will be used to index temparray
 
     sortslice_copy_incr(&dest, &runb);
-    // data[dest.start] = data[runb.start];
-    // dest.start += 1;
-    // dest.len -= 1;
-    // runb.start += 1;
-    // runb.len -= 1;
-
-    if runb.len == 0 {
-        return Ok(());
+    // --nb?
+    enum Exit {
+        Success,
+        Fail(&'static str),
+        CopyB,
     }
-    if runa.len == 1 {
-        // CopyB
-        return Ok(());
-    }
+    let exit = 'outer: loop {
+        // data[dest.start] = data[runb.start];
+        // dest.start += 1;
+        // dest.len -= 1;
+        // runb.start += 1;
+        // runb.len -= 1;
+        if runb.len == 0 {
+            break 'outer Exit::Success;
+        }
+        if runa.len == 1 {
+            break 'outer Exit::CopyB;
+        }
 
-    loop {
-        let acount = 0;
-        let bcount = 0;
+        let mut acount = 0;
+        let mut bcount = 0;
         loop {
-            let k: bool = less(&data[dest.start], &data[runb.start]);
-            if (k) {
+            let k: bool = less(&ms.temparray[runa.start], &data[runb.start]);
+            if k {
                 sortslice_copy_incr(&data, &dest, &runb);
                 bcount += 1;
                 acount = 0;
                 if runb.len == 0 {
-                    return Ok(());
+                    break 'outer Exit::Success;
                 }
                 if bcount >= ms.min_gallop {
                     break;
@@ -346,7 +355,7 @@ where
                 acount += 1;
                 bcount = 0;
                 if runa.len == 1 {
-                    // goto copyB
+                    break 'outer Exit::CopyB;
                 }
                 if acount >= min_gallop_t {
                     break;
@@ -367,15 +376,15 @@ where
                 run_advance(&dest, k);
                 run_advance(&runa, k);
                 if runa.len == 1 {
-                    // goto copyB
+                    break 'outer Exit::CopyB;
                 }
                 if runa.len == 0 {
-                    return Ok(());
+                    break 'outer Exit::Success;
                 }
             }
             sortslice_copy_incr(&data, &dest, &runb);
             if runb.len == 0 {
-                return Ok(());
+                break 'outer Exit::Success;
             }
             let k = gallop_left(data, data[runa.start], runb, 0, less);
             bcount = k;
@@ -384,36 +393,174 @@ where
                 sortslice_advance(&data, &dest, k);
                 sortslice_advance(&data, &runb, k);
                 if runb.len == 0 {
-                    return Ok(());
+                    break 'outer Exit::Success;
                 }
             }
-            sortslice_cop_incr(&data, &dest, &runa);
-            if runa.len == 0 {
-                // CopyB
-                assert!(runa.len == 1 && runb.len > 0);
-                sortslice_memmove(&data, &dest, 0, &runb, 0, k);
-                sortslice_copy(&data, &dest, runb.len, &runa, 0);
-                return Ok(());
+            sortslice_copy_incr(&data, &dest, &runa);
+            if runa.len == 1 {
+                break 'outer Exit::CopyB;
             }
         }
         min_gallop_t += 1;
 
         ms.min_gallop = min_gallop_t;
+    };
+
+    match exit {
+        Exit::Success => {
+            if runa.len > 0 {
+                sortslice_memcpy(&data, &dest, 0, &runa, 0);
+            }
+        }
+
+        Exit::Fail(e) => {
+            if runa.len > 0 {
+                sortslice_memcpy(&data, &dest, 0, &runa, 0);
+            }
+        }
+
+        Exit::CopyB => {
+            assert!(runa.len == 1 && runb.len > 0);
+
+            sortslice_memmove(&data, &dest, 0, &runb, 0);
+            sortslice_copy(&data, &dest, &runa, 0);
+        }
     }
 }
 
-fn merge_hi<T: Copy, F>(
-    data: &mut [T],
-    ms: &mut MergeState<T>,
-    runa: Run,
-    runb: Run,
-    less: &mut F,
-) -> Result<(), &'static str>
+fn merge_hi<T: Copy, F>(data: &mut [T], ms: &mut MergeState<T>, runa: Run, runb: Run, less: &mut F)
 where
     F: FnMut(&T, &T) -> bool,
 {
     assert!(runa.len > 0 && runb.len > 0);
-    Ok(())
+    ms.temparray.copy_from_slice(&data[runb.start..runb.end()]);
+    let min_gallop_t = ms.min_gallop;
+    // Dest -> runb start.
+    let mut dest: Run = runb.clone();
+    runb.start = 0; // Now will be used to index temparray
+
+    sortslice_copy_decr(&dest, &runa);
+    // --na
+    enum Exit {
+        Success,
+        Fail(&'static str),
+        CopyA,
+    }
+    let exit = 'outer: loop {
+        // data[dest.start] = data[runb.start];
+        // dest.start += 1;
+        // dest.len -= 1;
+        // runb.start += 1;
+        // runb.len -= 1;
+        if runa.len == 0 {
+            break 'outer Exit::Success;
+        }
+        if runb.len == 1 {
+            break 'outer Exit::CopyA;
+        }
+
+        let mut acount = 0;
+        let mut bcount = 0;
+        loop {
+            let k: bool = less(&ms.temparray[runb.start], &data[runa.start]);
+            if k {
+                sortslice_copy_decr(&data, &dest, &runa);
+                acount += 1;
+                bcount = 0;
+                // na--?
+                if runa.len == 0 {
+                    break 'outer Exit::Success;
+                }
+                if acount >= ms.min_gallop {
+                    break;
+                }
+            } else {
+                sortslice_copy_decr(&data, &dest, &runb);
+                bcount += 1;
+                acount = 0;
+                // --nb?
+                if runb.len == 1 {
+                    break 'outer Exit::CopyA;
+                }
+                if bcount >= min_gallop_t {
+                    break;
+                }
+            }
+        }
+
+        // Galloping logic
+        min_gallop_t += 1;
+        while bcount >= MIN_GALLOP || acount >= MIN_GALLOP {
+            assert!(runb.len > 1 && runa.len > 0);
+            min_gallop_t -= if min_gallop_t > 1 { 1 } else { 0 };
+            ms.min_gallop = min_gallop_t;
+            // ??
+            let mut k = gallop_right(data, data[runb.start], &mut runa, runa.len - 1, less);
+            k = runa.len - k;
+            acount = k;
+            if k > 0 {
+                run_advance(&dest, -k);
+                run_advance(&runa, -k);
+                sortslice_memmove(&dest, 1, &runa, 1, k);
+                // runa.len -= k?
+                if runa.len == 0 {
+                    break 'outer Exit::Success;
+                }
+            }
+            sortslice_copy_decr(&data, &dest, &runb);
+            // --runb.len?
+            if runb.len == 1 {
+                break 'outer Exit::CopyA;
+            }
+            // ???
+            let mut k = gallop_left(data, data[runa.start], &mut runb, runb.len - 1, less);
+            k = runb.len - k;
+            bcount = k;
+            if k > 0 {
+                sortslice_advance(&data, &dest, -k);
+                sortslice_advance(&data, &runb, -k);
+                sortslice_memcpy(&data, &dest, 1, &runb, k);
+                // nb -= k?
+                if runb.len == 1 {
+                    break 'outer Exit::CopyA;
+                }
+                if runb.len == 0 {
+                    break 'outer Exit::Success;
+                }
+            }
+            sortslice_cop_decr(&data, &dest, &runa);
+            // -- na?
+            if runa.len == 0 {
+                break 'outer Exit::Success;
+            }
+        }
+        min_gallop_t += 1;
+
+        ms.min_gallop = min_gallop_t;
+    };
+
+    match exit {
+        Exit::Success => {
+            if runb.len > 0 {
+                sortslice_memcpy(&data, &dest, -runb.len - 1, &runb, runb.len);
+            }
+        }
+
+        Exit::Fail(e) => {
+            if runb.len > 0 {
+                sortslice_memcpy(&data, &dest, -runb.len - 1, &runb, runb.len);
+            }
+        }
+
+        Exit::CopyB => {
+            assert!(runa.len == 1 && runb.len > 0);
+
+            sortslice_memmove(&data, &dest, 1 - runa.len, &runa, 1 - runa.len, runa.len);
+            sortslice_advance(&data, &dest, -runa.len);
+            sortslice_advance(&data, &runa, -runa.len);
+            sortslice_copy(&data, &dest, 0, &runb, 0);
+        }
+    }
 }
 
 fn gallop_right<T: Copy, F>(

@@ -11,13 +11,10 @@ use std::{
 };
 // TODO:
 // Mergestuff
-// - All the memory functions (memcpy, memmove)
-//      - sortslice_memcpy/move
-// - All the run incr/decr helpers
-//      - sortslice_copy_incr/decr
-//      - sorctslice_advance
-// - Finalize merge_lo/hi once helper function worked out
+// - Finalize merge_lo/hi
 //      - Assure that the mergestate returns to original-ish
+//      - Double check looped. Ensure that the while will always fire at least once (like do) if
+//      needed
 // - Put effort into error handling once memory functions are in
 //      - Logic errors to debug_asserts, panic on memory errors
 // Tests:
@@ -179,23 +176,8 @@ where
 
 // ----- MergeSort section -----
 
-// Run and its functions
-#[derive(Clone, Copy, Debug, Default)]
-struct Run {
-    start: usize,
-    len: usize,
-}
-
-impl Run {
-    #[inline]
-    fn end(self) -> usize {
-        self.start + self.len
-    }
-}
-
-const EMPTY_RUN: Run = Run { start: 0, len: 0 };
-
-// Mergestate and its functions
+// Mergestate keeps track of galloping stats, the Runs that need to be sorted and the temporary
+// array during merging
 struct MergeState<T> {
     min_gallop: usize,
     pending: [Run; MAX_PENDING_SLICES],
@@ -224,6 +206,34 @@ impl<T: Copy> MergeState<T> {
         self.pending[i]
     }
 }
+
+// Run to keep track of indexing into the main data or the temparray
+#[derive(Clone, Copy, Debug, Default)]
+struct Run {
+    start: usize,
+    len: usize,
+}
+
+impl Run {
+    #[inline]
+    fn end(self) -> usize {
+        self.start + self.len
+    }
+
+    #[inline]
+    fn advance_front(&mut self) {
+        self.start += 1;
+        self.len -= 1;
+    }
+
+    #[inline]
+    fn advance_back(&mut self) {
+        self.start -= 1;
+        self.len -= 1;
+    }
+}
+
+const EMPTY_RUN: Run = Run { start: 0, len: 0 };
 
 // Mergesort itself
 fn merge_force_collapse<T: Copy, F>(ms: &mut MergeState<T>, data: &mut [T], less: &mut F)
@@ -294,7 +304,7 @@ where
     }
 
     if ms.run(i).len <= ms.run(i + 1).len {
-        merge_lo(data, ms, &mut ms.run(i), &mut ms.run(i + 1), less);
+        merge_lo(data, ms, ms.run(i), ms.run(i + 1), less);
     } else {
         merge_hi(data, ms, ms.run(i), ms.run(i + 1), less);
     }
@@ -303,32 +313,31 @@ where
 fn merge_lo<T: Copy, F>(
     data: &mut [T],
     ms: &mut MergeState<T>,
-    runa: &mut Run,
-    runb: &mut Run,
+    mut runa: Run,
+    mut runb: Run,
     less: &mut F,
 ) where
     F: FnMut(&T, &T) -> bool,
 {
     assert!(runa.len > 0 && runb.len > 0);
     ms.temparray.copy_from_slice(&data[runa.start..runa.end()]);
-    let min_gallop_t = ms.min_gallop;
-    // Dest -> runa start.
-    let mut dest: Run = runa.clone();
-    runa.start = 0; // Now will be used to index temparray
+    let mut min_gallop_t = ms.min_gallop;
 
-    sortslice_copy_incr(&dest, &runb);
-    // --nb?
+    let mut dest: Run = runa.clone();
+
+    runa.start = 0; // Now will be used to index temparray
+    let (left, right) = data.split_at_mut(runb.start);
+    copy_element(&mut left[dest.start], &right[0]);
+    dest.advance_front();
+    runb.advance_front();
+
     enum Exit {
         Success,
         Fail(&'static str),
         CopyB,
     }
+
     let exit = 'outer: loop {
-        // data[dest.start] = data[runb.start];
-        // dest.start += 1;
-        // dest.len -= 1;
-        // runb.start += 1;
-        // runb.len -= 1;
         if runb.len == 0 {
             break 'outer Exit::Success;
         }
@@ -341,7 +350,10 @@ fn merge_lo<T: Copy, F>(
         loop {
             let k: bool = less(&ms.temparray[runa.start], &data[runb.start]);
             if k {
-                sortslice_copy_incr(&data, &dest, &runb);
+                let (left, right) = data.split_at_mut(runb.start);
+                copy_element(&mut left[dest.start], &right[0]);
+                dest.advance_front();
+                runb.advance_front();
                 bcount += 1;
                 acount = 0;
                 if runb.len == 0 {
@@ -351,7 +363,10 @@ fn merge_lo<T: Copy, F>(
                     break;
                 }
             } else {
-                sortslice_copy_incr(&data, &dest, &runa);
+                copy_element(&mut data[dest.start], &ms.temparray[runa.start]);
+                dest.advance_front();
+                runa.advance_front();
+
                 acount += 1;
                 bcount = 0;
                 if runa.len == 1 {
@@ -369,12 +384,16 @@ fn merge_lo<T: Copy, F>(
             assert!(runa.len > 1 && runb.len > 0);
             min_gallop_t -= if min_gallop_t > 1 { 1 } else { 0 };
             ms.min_gallop = min_gallop_t;
-            let k = gallop_right(data, data[runb.start], runa, 0, less);
+            let k = gallop_right(data, data[runb.start], &mut runa, 0, less);
             acount = k;
             if k > 0 {
-                sortslice_memcpy(&data, &dest, 0, &runa, 0, k);
-                run_advance(&dest, k);
-                run_advance(&runa, k);
+                run_memcpy(
+                    &mut data[dest.start..dest.start + k],
+                    &ms.temparray[runa.start..runa.start + k],
+                );
+                run_advance(dest, k as isize);
+                run_advance(runa, k as isize);
+
                 if runa.len == 1 {
                     break 'outer Exit::CopyB;
                 }
@@ -382,21 +401,27 @@ fn merge_lo<T: Copy, F>(
                     break 'outer Exit::Success;
                 }
             }
-            sortslice_copy_incr(&data, &dest, &runb);
+            let (left, right) = data.split_at_mut(runb.start);
+            copy_element(&mut left[dest.start], &right[0]);
+            dest.advance_front();
+            runb.advance_front();
+
             if runb.len == 0 {
                 break 'outer Exit::Success;
             }
-            let k = gallop_left(data, data[runa.start], runb, 0, less);
+            let k = gallop_left(data, ms.temparray[runa.start], &mut runb, 0, less);
             bcount = k;
             if k > 0 {
-                sortslice_memmove(&data, &dest, 0, &runb, 0, k);
-                sortslice_advance(&data, &dest, k);
-                sortslice_advance(&data, &runb, k);
+                run_memmove(data, dest.start, runb.start..runb.start + k);
+                run_advance(dest, k as isize);
+                run_advance(runb, k as isize);
                 if runb.len == 0 {
                     break 'outer Exit::Success;
                 }
             }
-            sortslice_copy_incr(&data, &dest, &runa);
+            copy_element(&mut data[dest.start], &ms.temparray[runa.start]);
+            dest.advance_front();
+            runa.advance_front();
             if runa.len == 1 {
                 break 'outer Exit::CopyB;
             }
@@ -409,49 +434,68 @@ fn merge_lo<T: Copy, F>(
     match exit {
         Exit::Success => {
             if runa.len > 0 {
-                sortslice_memcpy(&data, &dest, 0, &runa, 0);
+                run_memcpy(
+                    &mut data[dest.start..dest.start + runa.len],
+                    &ms.temparray[runa.start..runa.start + runa.len],
+                );
             }
         }
 
         Exit::Fail(e) => {
             if runa.len > 0 {
-                sortslice_memcpy(&data, &dest, 0, &runa, 0);
+                run_memcpy(
+                    &mut data[dest.start..dest.start + runa.len],
+                    &ms.temparray[runa.start..runa.start + runa.len],
+                );
             }
         }
 
         Exit::CopyB => {
             assert!(runa.len == 1 && runb.len > 0);
-
-            sortslice_memmove(&data, &dest, 0, &runb, 0);
-            sortslice_copy(&data, &dest, &runa, 0);
+            run_memmove(data, dest.start, runb.start..runb.start + runb.len);
+            copy_element(&mut data[dest.start + runb.len], &ms.temparray[runa.start]);
         }
     }
 }
 
-fn merge_hi<T: Copy, F>(data: &mut [T], ms: &mut MergeState<T>, runa: Run, runb: Run, less: &mut F)
-where
+fn merge_hi<T: Copy, F>(
+    data: &mut [T],
+    ms: &mut MergeState<T>,
+    mut runa: Run,
+    mut runb: Run,
+    less: &mut F,
+) where
     F: FnMut(&T, &T) -> bool,
 {
     assert!(runa.len > 0 && runb.len > 0);
-    ms.temparray.copy_from_slice(&data[runb.start..runb.end()]);
-    let min_gallop_t = ms.min_gallop;
-    // Dest -> runb start.
-    let mut dest: Run = runb.clone();
-    runb.start = 0; // Now will be used to index temparray
+    assert!(runa.start + runa.len == runb.start);
 
-    sortslice_copy_decr(&dest, &runa);
-    // --na
+    let mut min_gallop_t = ms.min_gallop;
+
+    let mut dest: Run = runb.clone();
+    run_advance(dest, runb.len as isize - 1);
+
+    ms.temparray.copy_from_slice(&data[runb.start..runb.end()]);
+    let mut basea = runa.clone();
+    let mut baseb = Run {
+        start: 0,
+        len: runb.len,
+    };
+    runb.start = 0 + runb.len - 1; // Now will be used to index temparray
+
+    run_advance(runa, runa.len as isize - 1);
+
+    let (left, right) = data.split_at_mut(dest.start);
+    copy_element(&mut right[0], &left[runa.start]);
+    dest.advance_back();
+    runa.advance_back();
     enum Exit {
         Success,
         Fail(&'static str),
         CopyA,
     }
+
     let exit = 'outer: loop {
-        // data[dest.start] = data[runb.start];
-        // dest.start += 1;
-        // dest.len -= 1;
-        // runb.start += 1;
-        // runb.len -= 1;
         if runa.len == 0 {
             break 'outer Exit::Success;
         }
@@ -464,10 +508,13 @@ where
         loop {
             let k: bool = less(&ms.temparray[runb.start], &data[runa.start]);
             if k {
-                sortslice_copy_decr(&data, &dest, &runa);
+                let (left, right) = data.split_at_mut(dest.start);
+                copy_element(&mut right[0], &left[runa.start]);
+                dest.advance_back();
+                runa.advance_back();
+
                 acount += 1;
                 bcount = 0;
-                // na--?
                 if runa.len == 0 {
                     break 'outer Exit::Success;
                 }
@@ -475,10 +522,12 @@ where
                     break;
                 }
             } else {
-                sortslice_copy_decr(&data, &dest, &runb);
+                copy_element(&mut data[dest.start], &ms.temparray[runb.start]);
+                dest.advance_back();
+                runb.advance_back();
+
                 bcount += 1;
                 acount = 0;
-                // --nb?
                 if runb.len == 1 {
                     break 'outer Exit::CopyA;
                 }
@@ -494,33 +543,36 @@ where
             assert!(runb.len > 1 && runa.len > 0);
             min_gallop_t -= if min_gallop_t > 1 { 1 } else { 0 };
             ms.min_gallop = min_gallop_t;
-            // ??
-            let mut k = gallop_right(data, data[runb.start], &mut runa, runa.len - 1, less);
+            let a_len = runa.len;
+            let mut k = gallop_right(data, ms.temparray[runb.start], &mut basea, a_len - 1, less);
             k = runa.len - k;
             acount = k;
             if k > 0 {
-                run_advance(&dest, -k);
-                run_advance(&runa, -k);
-                sortslice_memmove(&dest, 1, &runa, 1, k);
-                // runa.len -= k?
+                run_advance(dest, -(k as isize));
+                run_advance(runa, -(k as isize));
+                run_memmove(data, dest.start + 1, runa.start + 1..runa.start + 1 + k);
                 if runa.len == 0 {
                     break 'outer Exit::Success;
                 }
             }
-            sortslice_copy_decr(&data, &dest, &runb);
-            // --runb.len?
+            copy_element(&mut data[dest.start], &ms.temparray[runb.start]);
+            runb.advance_back();
+
             if runb.len == 1 {
                 break 'outer Exit::CopyA;
             }
-            // ???
-            let mut k = gallop_left(data, data[runa.start], &mut runb, runb.len - 1, less);
+            let b_len = runb.len;
+            let mut k = gallop_left(data, data[runa.start], &mut baseb, b_len - 1, less);
             k = runb.len - k;
             bcount = k;
             if k > 0 {
-                sortslice_advance(&data, &dest, -k);
-                sortslice_advance(&data, &runb, -k);
-                sortslice_memcpy(&data, &dest, 1, &runb, k);
-                // nb -= k?
+                run_advance(dest, -(k as isize));
+                run_advance(runb, -(k as isize));
+                run_memcpy(
+                    &mut data[dest.start + 1..dest.start + k],
+                    &ms.temparray[runb.start + 1..runb.start + k],
+                );
+
                 if runb.len == 1 {
                     break 'outer Exit::CopyA;
                 }
@@ -528,8 +580,9 @@ where
                     break 'outer Exit::Success;
                 }
             }
-            sortslice_cop_decr(&data, &dest, &runa);
-            // -- na?
+            copy_element(&mut data[dest.start], &ms.temparray[runb.start]);
+            dest.advance_back();
+            runb.advance_back();
             if runa.len == 0 {
                 break 'outer Exit::Success;
             }
@@ -542,24 +595,66 @@ where
     match exit {
         Exit::Success => {
             if runb.len > 0 {
-                sortslice_memcpy(&data, &dest, -runb.len - 1, &runb, runb.len);
+                let dst_start = dest.start - (runb.len) - 1;
+                run_memcpy(
+                    &mut data[dst_start..dest.start],
+                    &ms.temparray[baseb.start..baseb.start + baseb.len],
+                );
             }
         }
 
         Exit::Fail(e) => {
             if runb.len > 0 {
-                sortslice_memcpy(&data, &dest, -runb.len - 1, &runb, runb.len);
+                let dst_start = dest.start - (runb.len) - 1;
+
+                run_memcpy(
+                    &mut data[dst_start..dest.start],
+                    &ms.temparray[baseb.start..baseb.start + baseb.len],
+                );
             }
         }
 
-        Exit::CopyB => {
+        Exit::CopyA => {
             assert!(runa.len == 1 && runb.len > 0);
+            let dst = dest.start + 1 - runa.len;
+            let src_start = runa.start + 1 - runa.len;
+            let src_end = runa.start + 1;
 
-            sortslice_memmove(&data, &dest, 1 - runa.len, &runa, 1 - runa.len, runa.len);
-            sortslice_advance(&data, &dest, -runa.len);
-            sortslice_advance(&data, &runa, -runa.len);
-            sortslice_copy(&data, &dest, 0, &runb, 0);
+            run_memmove(data, dst, src_start..src_end);
+            run_advance(dest, -(runa.len as isize));
+            run_advance(runa, -(runa.len as isize));
+            copy_element(&mut data[dest.start], &ms.temparray[runb.start]);
         }
+    }
+}
+
+// Simple function to be able to increase/decrease multiple steps at a time
+fn run_advance(mut _run: Run, i: isize) {
+    if i > 0 {
+        _run.start += i as usize;
+        _run.len -= i as usize;
+    } else {
+        _run.start -= -i as usize;
+        _run.len += -i as usize;
+    }
+}
+
+// Used to naively copy single elements
+fn copy_element<T: Copy>(dst: &mut T, src: &T) {
+    *dst = *src;
+}
+
+// Copy over without certainty of shared data
+fn run_memmove<T: Copy>(data: &mut [T], dst: usize, src: std::ops::Range<usize>) {
+    data.copy_within(src, dst);
+}
+
+// Copy over with certainty of no shared data
+fn run_memcpy<T: Copy>(dst: &mut [T], src: &[T]) {
+    assert_eq!(dst.len(), src.len());
+
+    unsafe {
+        std::ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr(), src.len());
     }
 }
 
